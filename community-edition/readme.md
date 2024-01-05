@@ -24,6 +24,32 @@ Before deploying the charts in this repo, you will need to choose and configure 
   - UDP: 35000 -> 60000
 - An SMTP service for login emails and accounts (for login emails, ie. [use gmail as smtp](https://support.google.com/a/answer/176600?hl=en))
 
+# Optional Docker Builder
+
+To build the hcce.yaml file inside a docker container run the following:
+
+> Add your chosen services into `render_hcce.sh` with a text editor first
+
+```
+docker build . -t hubs-ce-builder:latest
+docker run --rm -it -v <COMMUNITY_EDITION_PATH>:/app hubs-ce-builder:latest
+# Then to deploy to k8
+kubectl apply -f ./hcce.yaml
+```
+
+once the container has run, you should see a new file (hcce.yaml) in your COMMUNITY_EDITION_PATH
+
+To build the cbb.yaml file inside a docker container run the following:
+
+> Add your chosen services into `render_cbb.sh` with a text editor first
+
+```
+docker build . -t hubs-ce-builder-cbb:latest
+docker run --rm -it -v <COMMUNITY_EDITION_PATH>:/app hubs-ce-builder-cbb:latest
+```
+
+once the container has run, you should see a new file (cbb.yaml) in your COMMUNITY_EDITION_PATH
+
 # Deploy to Kubernetes
 
 To deploy to your K8s cluster on your chosen hosting solution, follow these steps:
@@ -52,23 +78,34 @@ To deploy to your K8s cluster on your chosen hosting solution, follow these step
 
 Replace `hcce-vm-1` and `us-central1-a` with your desired name and zone. Check [the official doc](https://cloud.google.com/sdk/gcloud/reference/compute/instances/create) for more options.
 
-```
+````
+
 ### login gcp
+
 gcloud auth login
+
 ### create a vm
+
 `gcloud compute instances create hcce-vm-1 --zone=us-central1-a`
+
 ### ssh to the vm
+
 `gcloud compute ssh --project=hubs-dev-333333 --zone=us-central1-a geng-test-2`
+
 ### prepare the vm
+
 `sudo apt update && sudo apt install npm && sudo npm install pem-jwk -g`
+
 ### install k3s without traefik -- read https://docs.k3s.io/ for more info
+
 - `curl https://get.k3s.io/ | INSTALL_K3S_EXEC="--disable=traefik" sh -`
+
 ```
 
 #### Step 2: Deploy to kubernetes
 - Add your services to `render_hcce.sh`
 - Run `bash render_hcce.sh && sudo k3s kubectl apply -f hcce.yaml`
-  
+
 #### Step 3: connect the ingress
 - find the vm's external ip
 - create a-records to the dns
@@ -78,12 +115,19 @@ gcloud auth login
 #### Step 1: make a kubernetes environment
 replace `hcce-gke-1` and `us-central1-a` with your desired name and zone, check [official doc](https://cloud.google.com/sdk/gcloud/reference/container/clusters/create) for more options
 ```
+
 # login gcp
+
 gcloud auth login
+
 # create gke cluster
+
 gcloud container clusters create hcce-gke-1 --zone=us-central1-a
+
 # get creds for kubectl
+
 gcloud container clusters get-credentials --region us-central1-a hcce-gke-1
+
 ```
 
 #### Step 2: deploy to kubernetes
@@ -96,7 +140,7 @@ gcloud container clusters get-credentials --region us-central1-a hcce-gke-1
 
 # example -- a "potentially-somewhat-production-ready" instance on aws
 - comming soon
-  
+
 # considerations for production environment
 - infra
     - easy -- use a managed kubernetes
@@ -106,7 +150,7 @@ gcloud container clusters get-credentials --region us-central1-a hcce-gke-1
     - add a waf
 - scalability
     - stateful services
-        - pgsql 
+        - pgsql
             - use a managed pgsql ie. rds on aws or cloudsql on gcp
             - roll your own
                 - <links to some guides to run pgsql in k8s>
@@ -144,3 +188,4 @@ gcloud container clusters get-credentials --region us-central1-a hcce-gke-1
     - Use spot instances for nodes to save money.
     - Develop and integrate automated testing scripts into the ops pipeline
   - Configure devops for deploying custom versions of Spoke, Hubs, and Reticulum
+```
