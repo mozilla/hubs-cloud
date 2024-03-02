@@ -31,6 +31,32 @@ function make_pg_dump(){
     return 
 }
 
+TIMESTAMP_FILE=./turkey-pack-n-go_ts.tmp
+MAX_CALLS=900
+TIME_LIMIT=550
+touch $TIMESTAMP_FILE
+ratelimiter() {
+    printf "\n>>"
+    sleep 1
+    return
+    local current_time=$(date +%s)
+    # Read the timestamp file and remove records that are older than 10 minutes
+    awk -v limit=$((current_time - TIME_LIMIT)) '$1 > limit' $TIMESTAMP_FILE > ${TIMESTAMP_FILE}_tmp && mv ${TIMESTAMP_FILE}_tmp $TIMESTAMP_FILE
+    local call_count=$(wc -l < $TIMESTAMP_FILE)
+    if (( call_count >= MAX_CALLS )); then
+        local oldest_timestamp=$(head -n 1 $TIMESTAMP_FILE)
+        local sleep_time=$((oldest_timestamp + TIME_LIMIT - current_time))
+        echo "cool down ($sleep_time)"
+        sleep $sleep_time
+        ratelimiter
+        return
+    else
+        echo $current_time >> $TIMESTAMP_FILE
+        echo ">>"
+    fi
+}
+
+
 backupName="legacyhc"
 
 # 2 required inputs
@@ -54,6 +80,7 @@ find "/storage" -type f -print0 | while IFS= read -r -d '' file; do
     echo "$file" >> filelist
 done
 for f in $(cat filelist); do
+    ratelimiter
     printf "\n uploading: $f..."
     curl -s -o /dev/null -w "%{http_code}" -X POST -F "file=@$f" -H "turkeyauthtoken:$turkeyauthtoken" -H "addpath:/$backupName/$(dirname $f)" https://$hubdomain/api/ita/upload
     sleep 1
