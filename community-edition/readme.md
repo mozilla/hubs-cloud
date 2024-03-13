@@ -39,17 +39,6 @@ kubectl apply -f ./hcce.yaml
 
 once the container has run, you should see a new file (hcce.yaml) in your COMMUNITY_EDITION_PATH
 
-To build the cbb.yaml file inside a docker container run the following:
-
-> Add your chosen services into `render_cbb.sh` with a text editor first
-
-```
-docker build . -t hubs-ce-builder-cbb:latest
-docker run --rm -it -v <COMMUNITY_EDITION_PATH>:/app hubs-ce-builder-cbb:latest
-```
-
-once the container has run, you should see a new file (cbb.yaml) in your COMMUNITY_EDITION_PATH
-
 # Deploy to Kubernetes
 
 To deploy to your K8s cluster on your chosen hosting solution, follow these steps:
