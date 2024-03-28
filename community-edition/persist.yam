@@ -1,0 +1,1431 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: "$Namespace"
+  annotations:
+    domain: "$HUB_DOMAIN"
+    adm: "$ADM_EMAIL"
+---
+########################################################################
+###################### configs #########################################
+########################################################################
+apiVersion: v1
+kind: Secret
+metadata:
+  name: configs
+  namespace: "$Namespace"
+stringData:
+  NODE_COOKIE: "$NODE_COOKIE"
+  HUB_DOMAIN: "$HUB_DOMAIN"
+  DB_USER: "$DB_USER"
+  DB_PASS: "$DB_PASS"
+  DB_NAME: "$DB_NAME"
+  DB_HOST: "$DB_HOST"
+  DB_HOST_T: "$DB_HOST_T"
+  SMTP_SERVER: "$SMTP_SERVER"
+  SMTP_PORT: "$SMTP_PORT"
+  SMTP_USER: "$SMTP_USER"
+  SMTP_PASS: "$SMTP_PASS"
+  ADM_EMAIL: "$ADM_EMAIL"
+  PGRST_DB_URI: "$PGRST_DB_URI"
+  GUARDIAN_KEY: "$GUARDIAN_KEY"
+  PHX_KEY: "$PHX_KEY"
+  SKETCHFAB_API_KEY: "$SKETCHFAB_API_KEY"
+  TENOR_API_KEY: "$TENOR_API_KEY"
+  PSQL: "$PSQL"
+  PERMS_KEY: '$PERMS_KEY'
+  PGRST_JWT_SECRET: '$PGRST_JWT_SECRET'
+---
+
+######################################################################################
+################################# persistent volume ##################################
+######################################################################################
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: pgsql-pv
+  labels:
+    type: local
+spec:
+  storageClassName: manual
+  capacity:
+    storage:  10Gi
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  hostPath:
+    path: "/tmp/pgsql_data"
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: ret-pv
+  labels:
+    type: local
+spec:
+  storageClassName: manual
+  capacity:
+    storage:  10Gi
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  hostPath:
+    path: "/tmp/ret_storage_data"
+    type: DirectoryOrCreate
+---
+######################################################################################
+############################## persistent volume claim ###############################
+######################################################################################
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ret-pvc
+  namespace: $Namespace
+spec:
+  storageClassName: manual
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pgsql-pvc
+  namespace: $Namespace
+spec:
+  storageClassName: manual
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 10Gi
+---
+######################################################################################
+###################################### ingress #######################################
+######################################################################################
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ret
+  namespace: $Namespace
+  annotations:
+    kubernetes.io/ingress.class: haproxy
+    haproxy.org/response-set-header: |
+      access-control-allow-origin "https://$HUB_DOMAIN"
+    haproxy.org/path-rewrite: /api-internal(.*) /_drop_
+spec:
+  tls:
+  - hosts:
+      - $HUB_DOMAIN
+    secretName: cert-$HUB_DOMAIN
+  - hosts:
+      - assets.$HUB_DOMAIN
+    secretName: cert-assets.$HUB_DOMAIN
+  - hosts:
+      - stream.$HUB_DOMAIN
+    secretName: cert-stream.$HUB_DOMAIN
+  - hosts:
+      - cors.$HUB_DOMAIN
+    secretName: cert-cors.$HUB_DOMAIN
+  rules:
+  - host: $HUB_DOMAIN
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: ret
+            port:
+              number: 4001
+  - host: assets.$HUB_DOMAIN
+    http:
+      paths:
+      - path: /files/
+        pathType: Prefix
+        backend:
+          service:
+            name: ret
+            port:
+              number: 4001
+      - path: /http
+        pathType: ImplementationSpecific  # haproxy's "Begin with"
+        backend:
+          service:
+            name: ret
+            port:
+              number: 4001
+      - path: /hubs
+        pathType: Prefix
+        backend:
+          service:
+            name: hubs
+            port:
+              number: 8080
+      - path: /spoke
+        pathType: Prefix
+        backend:
+          service:
+            name: spoke
+            port:
+              number: 8080
+  - host: cors.$HUB_DOMAIN
+    http:
+      paths:
+      - path: /files/
+        pathType: Prefix
+        backend:
+          service:
+            name: ret
+            port:
+              number: 4001
+      - path: /http
+        pathType: ImplementationSpecific
+        backend:
+          service:
+            name: ret
+            port:
+              number: 4001
+      - path: /hubs
+        pathType: Prefix
+        backend:
+          service:
+            name: hubs
+            port:
+              number: 8080
+      - path: /spoke
+        pathType: Prefix
+        backend:
+          service:
+            name: spoke
+            port:
+              number: 8080
+      - path: /nearspark
+        pathType: ImplementationSpecific
+        backend:
+          service:
+            name: nearspark
+            port:
+              number: 5000
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: dialog
+  namespace: $Namespace
+  annotations:
+    kubernetes.io/ingress.class: haproxy
+    haproxy.org/server-ssl: "true"
+    haproxy.org/load-balance: "url_param roomId"
+spec:
+  tls:
+  - hosts:
+      - stream.$HUB_DOMAIN
+    secretName: cert-stream.$HUB_DOMAIN
+  rules:
+  - host: stream.$HUB_DOMAIN
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: dialog
+            port:
+              number: 4443
+---
+##############################################################################################
+############################################ reticulum #######################################
+##############################################################################################
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ret-config
+  namespace: $Namespace
+data:
+  config.toml.template: |
+    [peerage]
+    dns_name = "ret.<POD_NS>.svc.cluster.local"
+    app_name = "ret"
+
+    [ret."Elixir.Ret"]
+    pool = "hubs"
+
+    [ret."Elixir.RetWeb.Plugs.DashboardHeaderAuthorization"]
+    dashboard_access_key = "<DASHBOARD_ACCESS_KEY>"
+
+    [ret."Elixir.Ret.DiscordClient"]
+    client_id = ""
+    client_secret = ""
+    bot_token = ""
+
+    [ret."Elixir.RetWeb.Endpoint".https]
+    port = 4000
+    certfile = "/ret/cert.pem"
+    cacertfile = "/ret/cacert.pem"
+    keyfile = "/ret/key.pem"
+
+    [ret."Elixir.RetWeb.Endpoint"]
+    allowed_origins = "*"
+    secret_key_base = "<PHX_KEY>"
+    allow_crawlers = true
+
+    [ret."Elixir.RetWeb.Endpoint".secondary_url]
+
+    [ret."Elixir.RetWeb.Endpoint".cors_proxy_url]
+    host = "cors.<HUB_DOMAIN>"
+    port = 443
+
+    [ret."Elixir.RetWeb.Endpoint".imgproxy_url]
+    host = "<IMG_PROXY>"
+    port = 5000
+
+    [ret."Elixir.RetWeb.Endpoint".assets_url]
+    host = "assets.<DOMAIN>"
+    port = 443
+
+    [ret."Elixir.RetWeb.Endpoint".link_url]
+    host = "hubs-link.local"
+
+    [ret."Elixir.RetWeb.Endpoint".url]
+    host = "<HUB_DOMAIN>"
+    port = 443
+
+    [ret."Elixir.RetWeb.Endpoint".static_url]
+    host = "<HUB_DOMAIN>"
+
+    [ret."Elixir.Ret.Repo"]
+    username = "<DB_USER>"
+    password = "<DB_PASS>"
+    database = "<DB_NAME>"
+    hostname = "<DB_HOST_T>"
+    template = "template0"
+    pool_size = 10
+    port = 5432
+
+    [ret."Elixir.Ret.SessionLockRepo"]
+    username = "<DB_USER>"
+    password = "<DB_PASS>"
+    database = "<DB_NAME>"
+    hostname = "<DB_HOST>"
+    template = "template0"
+
+    port = 5432
+
+    [ret."Elixir.Ret.Locking".session_lock_db]
+    username = "<DB_USER>"
+    password = "<DB_PASS>"
+    database = "<DB_NAME>"
+    hostname = "<DB_HOST>"
+    port = 5432
+
+    [ret."Elixir.Ret.Habitat"]
+    ip = "127.0.0.1"
+    http_port = 9631
+
+    [ret."Elixir.Ret.JanusLoadStatus"]
+    default_janus_host = "stream.<DOMAIN>"
+    janus_service_name = ""
+    janus_admin_secret = ""
+    janus_admin_port = 7000
+    janus_port = 4443
+
+    [ret."Elixir.Ret.Guardian"]
+    secret_key = "<GUARDIAN_KEY>"
+    issuer = "<HUB_DOMAIN>"
+
+    [ret."Elixir.Ret.PermsToken"]
+    perms_key = "<PERMS_KEY>"
+
+    [ret."Elixir.Ret.OAuthToken"]
+    oauth_token_key = ""
+
+    [ret]
+    bot_access_key = ""
+    # pgrest_host = ""
+    # ita_host = ""
+
+    [ret."Elixir.Ret.MediaResolver"]
+    ytdl_host = "<YTDL_HOST>"
+    photomnemonic_endpoint = "<PHOTOMNEMONIC>"
+    sketchfab_api_key = "<SKETCHFAB_API_KEY>"
+    tenor_api_key = "<TENOR_API_KEY>"
+
+    [ret."Elixir.Ret.Speelycaptor"]
+    speelycaptor_endpoint = "<SPEELYCAPTOR>"
+
+    [ret."Elixir.Ret.PageOriginWarmer"]
+    hubs_page_origin = "https://hubs.<POD_NS>:8080/hubs/pages"
+    spoke_page_origin = "https://spoke.<POD_NS>:8080/spoke/pages"
+    admin_page_origin = "https://hubs.<POD_NS>:8080/hubs/pages"
+    insecure_ssl = true
+
+    [ret."Elixir.Ret.HttpUtils"]
+    insecure_ssl = true
+
+    [ret."Elixir.Ret.Storage"]
+    storage_path = "/storage"
+    ttl = 172800
+    host = "https://<HUB_DOMAIN>"
+    quota_gb = "<STORAGE_QUOTA_GB>" # example: "12"
+    # ^^^ has to be string or elixir throws (ArgumentError) argument error:erlang.byte_size(#), but why
+
+    [ret."Elixir.RetWeb.Email"]
+    from = "noreply@<HUB_DOMAIN>"
+
+    [ret."Elixir.Ret.Mailer"]
+    server = "<SMTP_SERVER>"
+    port = "<SMTP_PORT>"
+    username = "<SMTP_USER>"
+    password = "<SMTP_PASS>"
+
+    [ret."Elixir.Ret.Support"]
+    slack_webhook_url = "<SLACK_WEBHOOK>"
+
+    [ret."Elixir.RetWeb.Plugs.AddCSP"]
+    child_src = ""
+    connect_src = "wss://*.stream.<DOMAIN>:4443"
+    font_src = ""
+    form_action = ""
+    frame_src = ""
+    img_src = "nearspark.reticulum.io"
+    manifest_src = ""
+    media_src = ""
+    script_src = ""
+    style_src = ""
+    worker_src = ""
+
+    [ret."Ret.Repo.Migrations.AdminSchemaInit"]
+    postgrest_password = ""
+
+    [ret."Elixir.Ret.StatsJob"]
+
+    [ret."Elixir.RetWeb.HealthController"]
+
+    [ret."Elixir.RetWeb.PageController"]
+    skip_cache = false
+    extra_avatar_headers = ""
+    extra_index_headers = ""
+    extra_room_headers = ""
+    extra_scene_headers = ""
+
+    extra_avatar_html = ""
+    extra_index_html = ""
+    extra_room_html = ""
+    extra_scene_html = ""
+
+    extra_avatar_script = ""
+    extra_index_script = ""
+    extra_room_script = ""
+    extra_scene_script = ""
+
+    [ret."Elixir.Ret.Account"]
+    admin_email = "<ADM_EMAIL>"
+
+    [ret."Elixir.Ret.Coturn"]
+    realm = "turkey"
+    public_tls_ports = "5349"
+
+    [web_push_encryption.vapid_details]
+    subject = ""
+    public_key = ""
+    private_key = ""
+
+    [sentry]
+    dsn = "<SENTRY_DSN>"
+
+    [run]
+    hostname_dns_suffix = "turkey"
+
+    [hackney]
+    max_connections = 250
+
+    [ret."Elixir.Ret.Meta"]
+    phx_host = "<HUB_DOMAIN>"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: reticulum
+  namespace: $Namespace
+  annotations:
+    cluster-autoscaler.kubernetes.io/safe-to-evict: "true"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: reticulum
+  minReadySeconds: 15
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  revisionHistoryLimit: 1
+  template:
+    metadata:
+      labels:
+        app: reticulum
+    spec:
+      volumes:
+      - name: storage
+        persistentVolumeClaim:
+          claimName: ret-pvc
+      - name: config
+        configMap:
+          name: ret-config
+      containers:
+      - name: reticulum
+        volumeMounts:
+        - name: storage
+          mountPath: /storage
+          mountPropagation: Bidirectional
+        - name: config
+          mountPath: /home/ret
+        securityContext:
+          privileged: true
+        image: mozillareality/ret:stable-latest
+        ports:
+        - containerPort: 9100
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: turkeyCfg_POD_NS
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: turkeyCfg_NODE_COOKIE
+          valueFrom:
+            secretKeyRef:
+              name: configs
+              key: NODE_COOKIE
+        - name: turkeyCfg_HUB_DOMAIN
+          valueFrom:
+            secretKeyRef:
+              name: configs
+              key: HUB_DOMAIN
+        - name: turkeyCfg_DOMAIN
+          valueFrom:
+            secretKeyRef:
+              name: configs
+              key: HUB_DOMAIN
+        - name: turkeyCfg_DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: configs
+              key: DB_USER
+        - name: turkeyCfg_DB_PASS
+          valueFrom:
+            secretKeyRef:
+              name: configs
+              key: DB_PASS
+        - name: turkeyCfg_DB_NAME
+          valueFrom:
+            secretKeyRef:
+              name: configs
+              key: DB_NAME
+        - name: turkeyCfg_DB_HOST
+          valueFrom:
+            secretKeyRef:
+              name: configs
+              key: DB_HOST
+        - name: turkeyCfg_DB_HOST_T
+          valueFrom:
+            secretKeyRef:
+              name: configs
+              key: DB_HOST_T
+        - name: turkeyCfg_GUARDIAN_KEY
+          valueFrom:
+            secretKeyRef:
+              name: configs
+              key: GUARDIAN_KEY
+        - name: turkeyCfg_PERMS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: configs
+              key: PERMS_KEY
+        - name: turkeyCfg_PHX_KEY
+          valueFrom:
+            secretKeyRef:
+              name: configs
+              key: PHX_KEY
+        - name: turkeyCfg_SMTP_SERVER
+          valueFrom:
+            secretKeyRef:
+              name: configs
+              key: SMTP_SERVER
+        - name: turkeyCfg_SMTP_PORT
+          valueFrom:
+            secretKeyRef:
+              name: configs
+              key: SMTP_PORT
+        - name: turkeyCfg_SMTP_USER
+          valueFrom:
+            secretKeyRef:
+              name: configs
+              key: SMTP_USER
+        - name: turkeyCfg_SMTP_PASS
+          valueFrom:
+            secretKeyRef:
+              name: configs
+              key: SMTP_PASS
+        - name: turkeyCfg_ADM_EMAIL
+          valueFrom:
+            secretKeyRef:
+              name: configs
+              key: ADM_EMAIL
+        - name: turkeyCfg_SKETCHFAB_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: configs
+              key: SKETCHFAB_API_KEY
+        - name: turkeyCfg_IMG_PROXY
+          value: nearspark.$Namespace
+        - name: turkeyCfg_TENOR_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: configs
+              key: TENOR_API_KEY
+        - name: turkeyCfg_YTDL_HOST
+          value: "https://hubs-ytdl-fsu7tyt32a-uc.a.run.app"
+        - name: turkeyCfg_PHOTOMNEMONIC
+          value: "https://photomnemonic-fsu7tyt32a-uc.a.run.app"
+        - name: turkeyCfg_SPEELYCAPTOR
+          value: "http://speelycaptor:5000"
+        - name: turkeyCfg_STORAGE_QUOTA_GB
+          value: "1000"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 4001
+            scheme: HTTP
+          initialDelaySeconds: 30
+          timeoutSeconds: 3
+          periodSeconds: 30
+        readinessProbe:
+            initialDelaySeconds: 20
+            httpGet:
+              path: /?skipadmin
+              port: 4001
+              scheme: HTTP
+            timeoutSeconds: 5
+            periodSeconds: 5
+            successThreshold: 5
+            failureThreshold: 100
+      - name: postgrest
+        image: mozillareality/postgrest:stable-latest
+        ports:
+        - containerPort: 3000
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: PGRST_LOG_LEVEL
+          value: info
+        - name: PGRST_DB_SCHEMA
+          value: ret0_admin
+        - name: PGRST_DB_ANON_ROLE
+          value: postgres
+        - name: PGRST_DB_URI
+          valueFrom:
+            secretKeyRef:
+              name: configs
+              key: PGRST_DB_URI
+        - name: PGRST_JWT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: configs
+              key: PGRST_JWT_SECRET
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ret
+  namespace: $Namespace
+spec:
+  clusterIP: None
+  ports:
+  - name: http-reticulum
+    port: 4001
+    targetPort: 4001
+  - name: https-reticulum
+    port: 4000
+    targetPort: 4000
+  selector:
+    app: reticulum
+---
+########################################################################
+######################   pgsql   #######################################
+########################################################################
+apiVersion: v1
+kind: Service
+metadata:
+  name: pgsql
+  namespace: $Namespace
+spec:
+  selector:
+    app: pgsql
+  ports:
+    - name: postgresql
+      protocol: TCP
+      port: 5432
+      targetPort: 5432
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pgsql
+  namespace: $Namespace
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: pgsql
+  template:
+    metadata:
+      labels:
+        app: pgsql
+    spec:
+      containers:
+        - name: postgresql
+          image: postgres:12
+          ports:
+            - name: postgresql
+              containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: configs
+                  key: DB_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: configs
+                  key: DB_PASS
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: configs
+                  key: DB_NAME
+          volumeMounts:
+            - name: postgresql-data
+              mountPath: /var/lib/postgresql/data
+      volumes:
+        - name: postgresql-data
+          persistentVolumeClaim:
+            claimName: pgsql-pvc
+---
+####################################################################################
+################################### pgbouncer ######################################
+####################################################################################
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pgbouncer
+  namespace: $Namespace
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: pgbouncer
+  minReadySeconds: 2
+  template:
+    metadata:
+      labels:
+        app: pgbouncer
+    spec:
+      containers:
+      - image: mozillareality/pgbouncer:stable-latest
+        imagePullPolicy: IfNotPresent
+        name: pgbouncer
+        env:
+        - name: MAX_CLIENT_CONN
+          value: "10000"
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: configs
+              key: DB_USER
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: configs
+              key: DB_PASS
+        - name: DB_HOST
+          value: pgsql
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pgbouncer
+  namespace: $Namespace
+spec:
+  ports:
+  - name: http
+    port: 5432
+    targetPort: 5432
+  selector:
+    app: pgbouncer
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pgbouncer-t
+  namespace: $Namespace
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: pgbouncer-t
+  minReadySeconds: 2
+  template:
+    metadata:
+      labels:
+        app: pgbouncer-t
+    spec:
+      containers:
+      - image: mozillareality/pgbouncer:stable-latest
+        imagePullPolicy: IfNotPresent
+        name: pgbouncer-t
+        env:
+        - name: MAX_CLIENT_CONN
+          value: "10000"
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: configs
+              key: DB_USER
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: configs
+              key: DB_PASS
+        - name: DB_HOST
+          value: pgsql
+        - name: POOL_MODE
+          value: transaction
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pgbouncer-t
+  namespace: $Namespace
+spec:
+  ports:
+  - name: http
+    port: 5432
+    targetPort: 5432
+  selector:
+    app: pgbouncer-t
+---
+########################################################################
+######################   hubs   ########################################
+########################################################################
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hubs
+  namespace: $Namespace
+  annotations:
+    cluster-autoscaler.kubernetes.io/safe-to-evict: "true"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hubs
+  minReadySeconds: 15
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: hubs
+    spec:
+      containers:
+      - name: hubs
+        image: mozillareality/hubs:stable-latest
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: turkeyCfg_thumbnail_server
+          value: nearspark.reticulum.io
+        - name: turkeyCfg_base_assets_path
+          value: https://assets.$HUB_DOMAIN/hubs/
+        - name: turkeyCfg_non_cors_proxy_domains
+          value: "$HUB_DOMAIN,assets.$HUB_DOMAIN"
+        - name: turkeyCfg_reticulum_server
+          value: $HUB_DOMAIN
+        - name: turkeyCfg_cors_proxy_server
+          value: cors.$HUB_DOMAIN
+        - name: turkeyCfg_shortlink_domain
+          value: $HUB_DOMAIN
+        - name: turkeyCfg_tier
+          value: p1
+        livenessProbe:
+          httpGet:
+            path: https://localhost/healthz
+            port: 8080
+            scheme: HTTPS
+          initialDelaySeconds: 20
+          timeoutSeconds: 1
+          periodSeconds: 120
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hubs
+  namespace: $Namespace
+  annotations:
+    haproxy.org/server-ssl: "true"
+spec:
+  clusterIP: None
+  ports:
+  - name: https-hubs
+    port: 8080
+    targetPort: 8080
+  selector:
+    app: hubs
+---
+########################################################################
+######################   spoke   ########################################
+########################################################################
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spoke
+  namespace: $Namespace
+  annotations:
+    cluster-autoscaler.kubernetes.io/safe-to-evict: "true"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: spoke
+  minReadySeconds: 15
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: spoke
+    spec:
+      containers:
+      - name: spoke
+        image: mozillareality/spoke:stable-latest
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: turkeyCfg_thumbnail_server
+          value: nearspark.reticulum.io
+        - name: turkeyCfg_base_assets_path
+          value: https://assets.$HUB_DOMAIN/spoke/
+        - name: turkeyCfg_non_cors_proxy_domains
+          value: "$HUB_DOMAIN,assets.$HUB_DOMAIN"
+        - name: turkeyCfg_reticulum_server
+          value: $HUB_DOMAIN
+        - name: turkeyCfg_cors_proxy_server
+          value: cors.$HUB_DOMAIN
+        - name: turkeyCfg_shortlink_domain
+          value: $HUB_DOMAIN
+        - name: turkeyCfg_hubs_server
+          value: $HUB_DOMAIN
+        livenessProbe:
+          httpGet:
+            path: https://localhost/healthz
+            port: 8080
+            scheme: HTTPS
+          initialDelaySeconds: 20
+          timeoutSeconds: 1
+          periodSeconds: 120
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: spoke
+  namespace: $Namespace
+  annotations:
+    haproxy.org/server-ssl: "true"
+spec:
+  clusterIP: None
+  ports:
+  - name: https-spoke
+    port: 8080
+    targetPort: 8080
+  selector:
+    app: spoke
+---
+########################################################################
+######################   nearspark   ###################################
+########################################################################
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nearspark
+  namespace: $Namespace
+  annotations:
+    cluster-autoscaler.kubernetes.io/safe-to-evict: "true"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nearspark
+  minReadySeconds: 15
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: nearspark
+    spec:
+      containers:
+      - name: nearspark
+        image: mozillareality/nearspark:stable-latest
+        ports:
+        - containerPort: 5000
+        imagePullPolicy: IfNotPresent
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nearspark
+  namespace: $Namespace
+spec:
+  ports:
+  - name: http
+    port: 5000
+    targetPort: 5000
+  selector:
+    app: nearspark
+# ---
+# ########################################################################
+# ######################   speelycaptor   ###############################
+# ########################################################################
+# apiVersion: apps/v1
+# kind: Deployment
+# metadata:
+#   name: speelycaptor
+#   namespace: $Namespace
+#   annotations:
+#     cluster-autoscaler.kubernetes.io/safe-to-evict: "true"
+# spec:
+#   replicas: 1
+#   selector:
+#     matchLabels:
+#       app: speelycaptor
+#   minReadySeconds: 2
+#   template:
+#     metadata:
+#       labels:
+#         app: speelycaptor
+#     spec:
+#       containers:
+#       - image: mozillareality/speelycaptor:stable-latest
+#         imagePullPolicy: IfNotPresent
+#         name: speelycaptor
+#         env:
+#         - name: scratchBucketId
+#           value: turkey-speelycaptor-scratch-bucket
+#         - name: CLOUD
+#           value: gcp
+#         - name: GCP_SA_HMAC_KEY
+#           valueFrom:
+#             secretKeyRef:
+#               name: configs
+#               key: GCP_SA_HMAC_KEY
+#         - name: GCP_SA_HMAC_SECRET
+#           valueFrom:
+#             secretKeyRef:
+#               name: configs
+#               key: GCP_SA_HMAC_SECRET
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: speelycaptor
+  namespace: $Namespace
+spec:
+  ports:
+  - name: speelycaptor
+    port: 5000
+    targetPort: 5000
+  selector:
+    app: speelycaptor
+---
+########################################################################
+######################   photomnemonic   ###############################
+########################################################################
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: photomnemonic
+  namespace: $Namespace
+  annotations:
+    cluster-autoscaler.kubernetes.io/safe-to-evict: "true"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: photomnemonic
+  minReadySeconds: 2
+  template:
+    metadata:
+      labels:
+        app: photomnemonic
+    spec:
+      containers:
+      - name: photomnemonic
+        image: mozillareality/photomnemonic:stable-latest
+        imagePullPolicy: IfNotPresent
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: photomnemonic
+  namespace: $Namespace
+spec:
+  ports:
+  - name: photomnemonic
+    port: 5000
+    targetPort: 5000
+  selector:
+    app: photomnemonic
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: configs
+  namespace: $Namespace
+stringData:
+  PSQL: $PSQL
+---
+########################################################################
+######################   dialog   ######################################
+########################################################################
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dialog
+  namespace: $Namespace
+  annotations:
+    cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dialog
+  minReadySeconds: 15
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: dialog
+    spec:
+      hostNetwork: true
+      containers:
+      - name: dialog
+        image: mozillareality/dialog:stable-latest
+        imagePullPolicy: Always
+        ports:
+        - hostPort: 4443
+          containerPort: 4443
+        env:
+        - name: perms_key
+          valueFrom:
+            secretKeyRef:
+              name: configs
+              key: PERMS_KEY
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dialog
+  namespace: $Namespace
+spec:
+  clusterIP: None
+  ports:
+  - name: https-dialog
+    port: 4443
+    targetPort: 4443
+  - name: https-dialog-adm
+    port: 7000
+    targetPort: 7000
+  selector:
+    app: dialog
+---
+########################################################################
+######################   coturn   ######################################
+########################################################################
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: coturn
+  namespace: $Namespace
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: coturn
+  minReadySeconds: 15
+  strategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app: coturn
+    spec:
+      hostNetwork: true
+      containers:
+      - name: coturn
+        image: mozillareality/coturn:stable-latest
+        imagePullPolicy: Always
+        ports:
+        - hostPort: 5349
+          containerPort: 5349
+        env:
+        - name: REALM
+          value: turkey
+        - name: PSQL
+          valueFrom:
+            secretKeyRef:
+              name: configs
+              key: PSQL
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: coturn
+  namespace: $Namespace
+spec:
+  ports:
+  - name: https-coturn
+    port: 5349
+    targetPort: 5349
+  selector:
+    app: coturn
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: haproxy-tcp-config
+  namespace: $Namespace
+data:
+  5349:
+    $Namespace/coturn:5349
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: haproxy-config
+  namespace: $Namespace
+data:
+  global-config-snippet: |
+    tune.bufsize 33792
+  backend-config-snippet: |
+    option forwardfor
+    option http-pretend-keepalive
+  ssl-redirect: "true"
+  timeout-client: 30m
+  timeout-client-fin: 1h
+  timeout-server: 30m
+  timeout-server-fin: 1h
+  timeout-connect: 3s
+  #access logging -- can be enabled at runtime
+  syslog-server: 'address:stdout, format: raw, facility:daemon'
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: cert-hcce
+  namespace: $Namespace
+type: kubernetes.io/tls
+data:
+  tls.crt: $initCert
+  tls.key: $initKey
+---
+######################################################################################
+###################################### haproxy #######################################
+######################################################################################
+kind: Deployment
+apiVersion: apps/v1
+metadata:
+  name: haproxy
+  namespace: $Namespace
+  labels:
+    app: haproxy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: haproxy
+  template:
+    metadata:
+      labels:
+        app: haproxy
+        name: haproxy
+    spec:
+      # hostNetwork: true
+      serviceAccountName: haproxy-sa
+      terminationGracePeriodSeconds: 60
+      containers:
+      - name: haproxy
+        image: haproxytech/kubernetes-ingress:1.8.5@sha256:09b59bc272e3aec5ca5b706774ed788c4bb4f184bb1d7ab99660a2b7773b0668
+        args:
+        - --configmap=$Namespace/haproxy-config
+        - --https-bind-port=4443
+        - --http-bind-port=8080
+        - --configmap-tcp-services=$Namespace/haproxy-tcp-config
+        - --ingress.class=haproxy
+        - --log=warning #error warning info debug trace
+        - --default-ssl-certificate=$Namespace/cert-hcce
+        securityContext:
+          runAsUser:  1000
+          runAsGroup: 1000
+          capabilities:
+            drop:
+              - ALL
+            add:
+              - NET_BIND_SERVICE
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 1042
+        env:
+        - name: TZ
+          value: "Etc/UTC"
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: lb
+  namespace: $Namespace
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: Local
+  selector:
+    app: haproxy
+  ports:
+  - name: http
+    port: 80
+    targetPort: 8080
+  - name: https
+    port: 443
+    targetPort: 4443
+  - name: dialog
+    port: 4443
+    targetPort: 4443
+  - name: turn
+    port: 5349
+    targetPort: 5349
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: haproxy-sa
+  namespace: $Namespace
+---
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: haproxy-cr
+rules:
+  - apiGroups:
+    - ""
+    resources:
+    - configmaps
+    - nodes
+    - pods
+    - namespaces
+    - events
+    - serviceaccounts
+    - services
+    - endpoints
+    verbs:
+    - get
+    - list
+    - watch
+  - apiGroups:
+    - "extensions"
+    - "networking.k8s.io"
+    resources:
+    - ingresses
+    - ingresses/status
+    - ingressclasses
+    verbs:
+    - get
+    - list
+    - watch
+  - apiGroups:
+    - "extensions"
+    - "networking.k8s.io"
+    resources:
+    - ingresses/status
+    verbs:
+    - update
+  - apiGroups:
+    - ""
+    resources:
+    - secrets
+    verbs:
+    - get
+    - list
+    - watch
+    - create
+    - patch
+    - update
+  - apiGroups:
+    - core.haproxy.org
+    resources:
+    - '*'
+    verbs:
+    - get
+    - list
+    - watch
+    - update
+  - apiGroups:
+    - "discovery.k8s.io"
+    resources:
+    - '*'
+    verbs:
+    - get
+    - list
+    - watch
+---
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: haproxy-rb
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: haproxy-cr
+subjects:
+- kind: ServiceAccount
+  name: haproxy-sa
+  namespace: $Namespace

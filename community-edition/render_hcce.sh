@@ -57,4 +57,10 @@ openssl req -x509 -newkey rsa:2048 -sha256 -days 36500 -nodes -keyout key.pem -o
 export initCert=$(base64 -i cert.pem | tr -d '\n')
 export initKey=$(base64 -i key.pem | tr -d '\n')
 
-envsubst < "hcce.yam" > "hcce.yaml"
+
+read -p "Do you want to use persistent volumes? (y/N): " use_persistent_answer
+if [[ $use_persistent_answer =~ ^[Yy]$ ]]; then
+    envsubst < "persist.yam" > "$Namespace.yaml"
+else
+    envsubst < "hcce.yam" > "$Namespace.yaml"
+fi
