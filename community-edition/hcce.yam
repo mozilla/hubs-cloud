@@ -170,7 +170,7 @@ metadata:
   namespace: $Namespace
   annotations:
     kubernetes.io/ingress.class: haproxy
-    haproxy.ingress.kubernetes.io/rewrite-target: /$1
+    haproxy.org/path-rewrite: /nearspark/(.*) /\1
 spec:
   tls:
   - hosts:
@@ -180,8 +180,8 @@ spec:
   - host: cors.$HUB_DOMAIN
     http:
       paths:
-      - path: /nearspark(/|$)(.*)
-        pathType: Prefix
+      - path: /nearspark
+        pathType: ImplementationSpecific
         backend:
           service:
             name: nearspark
@@ -342,7 +342,7 @@ data:
     font_src = ""
     form_action = ""
     frame_src = ""
-    img_src = "nearspark.reticulum.io"
+    img_src = ""
     manifest_src = ""
     media_src = ""
     script_src = ""
@@ -811,7 +811,7 @@ spec:
         imagePullPolicy: IfNotPresent
         env:
         - name: turkeyCfg_thumbnail_server
-          value: 'https://cors.$HUB_DOMAIN/nearspark'
+          value: 'cors.$HUB_DOMAIN/nearspark'
         - name: turkeyCfg_base_assets_path
           value: https://assets.$HUB_DOMAIN/hubs/
         - name: turkeyCfg_non_cors_proxy_domains
@@ -881,7 +881,7 @@ spec:
         imagePullPolicy: IfNotPresent
         env:
         - name: turkeyCfg_thumbnail_server
-          value: 'https://cors.$HUB_DOMAIN/nearspark'
+          value: 'cors.$HUB_DOMAIN/nearspark'
         - name: turkeyCfg_base_assets_path
           value: https://assets.$HUB_DOMAIN/spoke/
         - name: turkeyCfg_non_cors_proxy_domains
